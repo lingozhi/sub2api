@@ -1372,17 +1372,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预加载账号平台信息（混合渠道检查或 Sora 同步需要）。
 	platformByID := map[int64]string{}
+	groupAccountsByID := map[int64][]Account{}
 	if needMixedChannelCheck {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
-			if needMixedChannelCheck {
-				return nil, err
-			}
-		} else {
-			for _, account := range accounts {
-				if account != nil {
-					platformByID[account.ID] = account.Platform
-				}
+			return nil, err
+		}
+		for _, account := range accounts {
+			if account != nil {
+				platformByID[account.ID] = account.Platform
 			}
 		}
 	}
@@ -2218,6 +2216,6 @@ type MixedChannelError struct {
 }
 
 func (e *MixedChannelError) Error() string {
-	return fmt.Sprintf("警告：分组 \"%s\" 中同时包含 %s 和 %s 账号。混合使用不同渠道可能导致 thinking block 签名验证问题，请确保 Anthropic 账号是 Antigravity 反代暴露的 api。确定要继续吗？",
+	return fmt.Sprintf("mixed_channel_warning: Group '%s' contains both %s and %s accounts. Using mixed channels in the same context may cause thinking block signature validation issues, which will fallback to non-thinking mode for historical messages.",
 		e.GroupName, e.CurrentPlatform, e.OtherPlatform)
 }
