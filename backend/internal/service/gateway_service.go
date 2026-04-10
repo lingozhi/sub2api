@@ -1091,6 +1091,15 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 			modified = true
 		}
 	}
+	// 真实 Claude Code 从不发送 top_p / top_k / stop_sequences，清除以避免被检测
+	for _, field := range []string{"top_p", "top_k", "stop_sequences"} {
+		if gjson.GetBytes(out, field).Exists() {
+			if next, ok := deleteJSONPathBytes(out, field); ok {
+				out = next
+				modified = true
+			}
+		}
+	}
 
 	if !modified {
 		return body, modelID
@@ -3724,7 +3733,7 @@ func injectClaudeCodePrompt(body []byte, system any) []byte {
 // Anthropic 基于 system 参数内容检测第三方应用，仅前置追加 Claude Code 提示词
 // 无法通过检测，因为后续内容仍为非 Claude Code 格式。
 // 策略：将原始 system prompt 提取并注入为 user/assistant 消息对，system 仅保留 Claude Code 标识。
-func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
+func rewriteSystemForNonClaudeCode(body []byte, system any, fpUserAgent string) []byte {
 	system = normalizeSystemParam(system)
 
 	// 1. 提取原始 system prompt 文本
@@ -3745,13 +3754,18 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 	}
 
 	// 2. 将 system 替换为 Claude Code 标准提示词（array 格式，与真实 Claude Code 一致）
-	//    真实 Claude Code 始终以 [{type: "text", text: "...", cache_control: {type: "ephemeral"}}] 发送 system。
+	//    真实 Claude Code 在 firstParty 模式下始终以
+	//    [{type: "text", text: "...", cache_control: {type: "ephemeral", scope: "global"}}] 发送 system。
 	//    使用 string 格式会被 Anthropic 检测为第三方应用。
 	claudeCodeSystemBlock := []map[string]any{
 		{
+			"type": "text",
+			"text": BuildBillingHeaderText(body, fpUserAgent),
+		},
+		{
 			"type":          "text",
 			"text":          claudeCodeSystemPrompt,
-			"cache_control": map[string]string{"type": "ephemeral"},
+			"cache_control": map[string]string{"type": "ephemeral", "scope": "global"},
 		},
 	}
 	out, ok := setJSONValueBytes(body, "system", claudeCodeSystemBlock)
@@ -3992,20 +4006,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if shouldMimicClaudeCode {
 		// 非 Claude Code 客户端：将 system 替换为 Claude Code 标识，原始 system 迁移至 messages
 		// 条件：1) OAuth/SetupToken 账号  2) 不是 Claude Code 客户端  3) 不是 Haiku 模型  4) system 中还没有 Claude Code 提示词
-		systemRewritten := false
-		if !strings.Contains(strings.ToLower(reqModel), "haiku") &&
-			!systemIncludesClaudeCodePrompt(parsed.System) {
-			body = rewriteSystemForNonClaudeCode(body, parsed.System)
-			systemRewritten = true
-		}
 
-		// system 被重写时保留 CC prompt 的 cache_control: ephemeral（匹配真实 Claude Code 行为）；
-		// 未重写时（haiku / 已含 CC 前缀）剥离客户端 cache_control，与原有行为一致。
-		// 两种情况下 enforceCacheControlLimit 都会兜底处理上限。
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
+		// 先获取指纹（后续 system rewrite 和 metadata 注入都需要）
+		var mimicFP *Fingerprint
+		normalizeOpts := claudeOAuthNormalizeOptions{}
 		if s.identityService != nil {
 			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
 			if err == nil && fp != nil {
+				mimicFP = fp
 				// metadata 透传开启时跳过 metadata 注入
 				_, mimicMPT, _ := s.settingService.GetGatewayForwardingSettings(ctx)
 				if !mimicMPT {
@@ -4016,6 +4024,23 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				}
 			}
 		}
+
+		systemRewritten := false
+		if !strings.Contains(strings.ToLower(reqModel), "haiku") &&
+			!systemIncludesClaudeCodePrompt(parsed.System) {
+			// 传入指纹 UA 以便在 system 中注入 billing header 文本块
+			var fpUserAgent string
+			if mimicFP != nil {
+				fpUserAgent = mimicFP.UserAgent
+			}
+			body = rewriteSystemForNonClaudeCode(body, parsed.System, fpUserAgent)
+			systemRewritten = true
+		}
+
+		// system 被重写时保留 CC prompt 的 cache_control: ephemeral（匹配真实 Claude Code 行为）；
+		// 未重写时（haiku / 已含 CC 前缀）剥离客户端 cache_control，与原有行为一致。
+		// 两种情况下 enforceCacheControlLimit 都会兜底处理上限。
+		normalizeOpts.stripSystemCacheControl = !systemRewritten
 
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
 	}
@@ -5648,9 +5673,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// this as a legitimate Claude Code request; without it, the request is
 			// rejected as third-party ("out of extra usage").
 			// Haiku models are exempt from third-party detection and don't need it.
-			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking}
+			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaPromptCachingScope, claude.BetaRedactThinking, claude.BetaContextManagement, claude.BetaEffort}
 			if !strings.Contains(strings.ToLower(modelID), "haiku") {
-				requiredBetas = []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking}
+				requiredBetas = []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaPromptCachingScope, claude.BetaRedactThinking, claude.BetaContextManagement, claude.BetaEffort}
 			}
 			setHeaderRaw(req.Header, "anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, effectiveDropSet))
 		} else {
@@ -5672,13 +5697,24 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 	}
 
-	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
-	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
-		if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
-			if parsed := ParseMetadataUserID(uid); parsed != nil {
-				setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)
-			}
+	// 为 OAuth 请求注入 x-client-request-id（真实 Claude Code 每请求必带）
+	if tokenType == "oauth" && getHeaderRaw(req.Header, "x-client-request-id") == "" {
+		setHeaderRaw(req.Header, "x-client-request-id", uuid.New().String())
+	}
+
+	// 同步或注入 X-Claude-Code-Session-Id 头
+	if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
+		if parsed := ParseMetadataUserID(uid); parsed != nil && parsed.SessionID != "" {
+			// metadata 中有 session_id → 用它覆盖（无论 header 是否已存在）
+			setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)
 		}
+	} else if getHeaderRaw(req.Header, "X-Claude-Code-Session-Id") == "" && mimicClaudeCode && tokenType == "oauth" {
+		// fallback: 基于 token hash + 时间窗口生成 15 分钟黏性 session ID
+		seed := fmt.Sprintf("mimic-session::%x::%d",
+			sha256.Sum256([]byte(token)),
+			time.Now().Unix()/(15*60),
+		)
+		setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", generateSessionUUID(seed))
 	}
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===

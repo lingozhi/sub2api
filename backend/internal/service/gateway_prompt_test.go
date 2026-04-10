@@ -372,17 +372,27 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := rewriteSystemForNonClaudeCode([]byte(tt.body), tt.system)
+			result := rewriteSystemForNonClaudeCode([]byte(tt.body), tt.system, "")
 
 			var parsed map[string]any
 			err := json.Unmarshal(result, &parsed)
 			require.NoError(t, err)
 
-			// system 应为 array 格式: [{type: "text", text: "...", cache_control: {type: "ephemeral"}}]
+			// system 应为 array 格式: [{type: "text", text: billing_header}, {type: "text", text: "...", cache_control: {type: "ephemeral"}}]
 			systemArr, ok := parsed["system"].([]any)
 			require.True(t, ok, "system should be an array, got %T", parsed["system"])
-			require.Len(t, systemArr, 1, "system array should have exactly 1 block")
-			systemBlock, ok := systemArr[0].(map[string]any)
+			require.Len(t, systemArr, 2, "system array should have exactly 2 blocks (billing header + CC prompt)")
+
+			// 第一个块：billing header（无 cache_control）
+			billingBlock, ok := systemArr[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "text", billingBlock["type"])
+			billingText, ok := billingBlock["text"].(string)
+			require.True(t, ok)
+			require.True(t, strings.HasPrefix(billingText, "x-anthropic-billing-header:"), "billing header should start with x-anthropic-billing-header:")
+
+			// 第二个块：Claude Code 系统提示（带 cache_control）
+			systemBlock, ok := systemArr[1].(map[string]any)
 			require.True(t, ok)
 			require.Equal(t, "text", systemBlock["type"])
 			require.Equal(t, tt.wantSystemText, systemBlock["text"])

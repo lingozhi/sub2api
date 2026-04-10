@@ -12,6 +12,12 @@ const (
 	BetaTokenCounting            = "token-counting-2024-11-01"
 	BetaContext1M                = "context-1m-2025-08-07"
 	BetaFastMode                 = "fast-mode-2026-02-01"
+	BetaContextManagement        = "context-management-2025-06-27"
+	BetaStructuredOutputs        = "structured-outputs-2025-12-15"
+	BetaEffort                   = "effort-2025-11-24"
+	BetaTaskBudgets              = "task-budgets-2026-03-13"
+	BetaPromptCachingScope       = "prompt-caching-scope-2026-01-05"
+	BetaRedactThinking           = "redact-thinking-2026-02-12"
 )
 
 // DroppedBetas 是转发时需要从 anthropic-beta header 中移除的 beta token 列表。
@@ -19,7 +25,7 @@ const (
 var DroppedBetas = []string{}
 
 // DefaultBetaHeader Claude Code 客户端默认的 anthropic-beta header
-const DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+const DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
 
 // MessageBetaHeaderNoTools /v1/messages 在无工具时的 beta header
 //
@@ -39,7 +45,7 @@ const CountTokensBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInter
 const HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking
 
 // APIKeyBetaHeader API-key 账号建议使用的 anthropic-beta header（不包含 oauth）
-const APIKeyBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+const APIKeyBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking
 
 // APIKeyHaikuBetaHeader Haiku 模型在 API-key 账号下使用的 anthropic-beta header（不包含 oauth / claude-code）
 const APIKeyHaikuBetaHeader = BetaInterleavedThinking
@@ -48,13 +54,13 @@ const APIKeyHaikuBetaHeader = BetaInterleavedThinking
 var DefaultHeaders = map[string]string{
 	// Keep these in sync with recent Claude CLI traffic to reduce the chance
 	// that Claude Code-scoped OAuth credentials are rejected as "non-CLI" usage.
-	"User-Agent":                                "claude-cli/2.1.22 (external, cli)",
+	"User-Agent":                                "claude-cli/2.1.81 (external, cli)",
 	"X-Stainless-Lang":                          "js",
-	"X-Stainless-Package-Version":               "0.70.0",
+	"X-Stainless-Package-Version":               "0.72.1",
 	"X-Stainless-OS":                            "Linux",
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Runtime":                       "node",
-	"X-Stainless-Runtime-Version":               "v24.13.0",
+	"X-Stainless-Runtime-Version":               "v24.14.0",
 	"X-Stainless-Retry-Count":                   "0",
 	"X-Stainless-Timeout":                       "600",
 	"X-App":                                     "cli",

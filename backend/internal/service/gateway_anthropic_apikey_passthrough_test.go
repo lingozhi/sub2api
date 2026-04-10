@@ -762,8 +762,12 @@ func TestGatewayService_AnthropicOAuth_ForwardPreservesBillingHeaderSystemBlock(
 			system := gjson.GetBytes(upstream.lastBody, "system")
 			require.True(t, system.Exists())
 			require.True(t, system.IsArray(), "system should be an array")
-			require.Equal(t, claudeCodeSystemPrompt, system.Array()[0].Get("text").String())
-			require.Equal(t, "ephemeral", system.Array()[0].Get("cache_control.type").String())
+			require.GreaterOrEqual(t, len(system.Array()), 2, "system array should have at least 2 blocks (billing header + CC prompt)")
+			// system[0] = billing header block
+			require.True(t, strings.HasPrefix(system.Array()[0].Get("text").String(), "x-anthropic-billing-header:"), "system[0] should be billing header")
+			// system[1] = Claude Code system prompt with cache_control
+			require.Equal(t, claudeCodeSystemPrompt, system.Array()[1].Get("text").String())
+			require.Equal(t, "ephemeral", system.Array()[1].Get("cache_control.type").String())
 
 			// 原始 system prompt 应迁移至 messages 中
 			messages := gjson.GetBytes(upstream.lastBody, "messages")
