@@ -1101,6 +1101,44 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 		}
 	}
 
+	// 真实 Claude Code 始终 stream: true
+	if !gjson.GetBytes(out, "stream").Exists() || !gjson.GetBytes(out, "stream").Bool() {
+		if next, ok := setJSONValueBytes(out, "stream", true); ok {
+			out = next
+			modified = true
+		}
+	}
+
+	// 真实 Claude Code 默认 max_tokens = 8000（CAPPED_DEFAULT_MAX_TOKENS）
+	// 非标值是明显的异常信号
+	if !gjson.GetBytes(out, "max_tokens").Exists() {
+		if next, ok := setJSONValueBytes(out, "max_tokens", 8000); ok {
+			out = next
+			modified = true
+		}
+	}
+
+	// 真实 Claude Code 对 Claude 4.5+/4.6 始终发送 thinking: {type: "adaptive"}
+	// Haiku 不支持 thinking
+	if !gjson.GetBytes(out, "thinking").Exists() && !strings.Contains(strings.ToLower(modelID), "haiku") {
+		thinkingObj := map[string]string{"type": "adaptive"}
+		if next, ok := setJSONValueBytes(out, "thinking", thinkingObj); ok {
+			out = next
+			modified = true
+			// 配套注入 context_management（thinking 启用时 CC 始终发送）
+			if !gjson.GetBytes(out, "context_management").Exists() {
+				cmObj := map[string]any{
+					"edits": []map[string]any{
+						{"type": "clear_thinking_20251015", "keep": "all"},
+					},
+				}
+				if next2, ok2 := setJSONValueBytes(out, "context_management", cmObj); ok2 {
+					out = next2
+				}
+			}
+		}
+	}
+
 	if !modified {
 		return body, modelID
 	}
@@ -5673,9 +5711,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// this as a legitimate Claude Code request; without it, the request is
 			// rejected as third-party ("out of extra usage").
 			// Haiku models are exempt from third-party detection and don't need it.
-			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaPromptCachingScope, claude.BetaRedactThinking, claude.BetaContextManagement, claude.BetaEffort}
+			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaPromptCachingScope, claude.BetaRedactThinking, claude.BetaContextManagement, claude.BetaEffort, claude.BetaStructuredOutputs}
 			if !strings.Contains(strings.ToLower(modelID), "haiku") {
-				requiredBetas = []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaPromptCachingScope, claude.BetaRedactThinking, claude.BetaContextManagement, claude.BetaEffort}
+				requiredBetas = []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaPromptCachingScope, claude.BetaRedactThinking, claude.BetaContextManagement, claude.BetaEffort, claude.BetaStructuredOutputs}
 			}
 			setHeaderRaw(req.Header, "anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, effectiveDropSet))
 		} else {
