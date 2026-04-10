@@ -76,18 +76,29 @@ func xxHash64Seeded(data []byte, seed uint64) uint64 {
 // DefaultCLIVersion 当无法从 User-Agent 提取版本时使用的默认版本号。
 const DefaultCLIVersion = "2.1.81"
 
+// cchFieldRe matches any " cch=XXXXX;" segment in billing header text (placeholder or signed).
+// Used by stripBillingHeaderCCH to remove the cch field entirely.
+var cchFieldRe = regexp.MustCompile(`(x-anthropic-billing-header:[^"]*?) cch=[0-9a-fA-F]{5};`)
+
+// stripBillingHeaderCCH removes the cch field from billing header text in the request body.
+// This is used when enable_cch_signing is false to avoid sending cch=00000 placeholder
+// which is an obvious forgery signal. Real Claude Code without NATIVE_CLIENT_ATTESTATION
+// simply omits the cch field entirely.
+func stripBillingHeaderCCH(body []byte) []byte {
+	return cchFieldRe.ReplaceAll(body, []byte("${1}"))
+}
+
 // BuildBillingHeaderText 为 mimic 模式构造 billing header 系统文本。
-// 格式与真实 Claude Code 完全一致（cc/constants/system.ts getAttributionHeader）：
+// 格式与非 Bun 环境的真实 Claude Code 一致（不含 cch 字段）：
 //
-//	x-anthropic-billing-header: cc_version={VER}.{FP}; cc_entrypoint=cli; cch=00000;
+//	x-anthropic-billing-header: cc_version={VER}.{FP}; cc_entrypoint=cli;
 //
-// 其中 VER 是 CLI 版本号，FP 是 3 字符消息指纹，cch=00000 是占位符
-// （后续由 signBillingHeaderCCH 签名替换）。
+// 其中 VER 是 CLI 版本号，FP 是 3 字符消息指纹。
 func BuildBillingHeaderText(body []byte, userAgent string) string {
 	version := ExtractCLIVersion(userAgent)
 	if version == "" {
 		version = DefaultCLIVersion
 	}
 	fp := claude.ComputeMessageFingerprintFromBody(body, version)
-	return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli; cch=00000;", version, fp)
+	return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli;", version, fp)
 }

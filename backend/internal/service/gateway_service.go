@@ -854,7 +854,9 @@ func (s *GatewayService) hashContent(content string) string {
 }
 
 type anthropicCacheControlPayload struct {
-	Type string `json:"type"`
+	Type  string `json:"type"`
+	Scope string `json:"scope,omitempty"`
+	TTL   string `json:"ttl,omitempty"`
 }
 
 type anthropicSystemTextBlockPayload struct {
@@ -903,7 +905,7 @@ func marshalAnthropicSystemTextBlock(text string, includeCacheControl bool) ([]b
 		Text: text,
 	}
 	if includeCacheControl {
-		block.CacheControl = &anthropicCacheControlPayload{Type: "ephemeral"}
+		block.CacheControl = &anthropicCacheControlPayload{Type: "ephemeral", Scope: "global", TTL: "1h"}
 	}
 	return json.Marshal(block)
 }
@@ -957,6 +959,36 @@ func deleteJSONPathBytes(body []byte, path string) ([]byte, bool) {
 		return body, false
 	}
 	return next, true
+}
+
+// normalizeMessageContentToArray converts string-typed message content fields
+// to array format [{type:"text",text:"..."}]. Real Claude Code always sends
+// content as an array of typed blocks (cc/utils/messages.ts normalizes before
+// sending). Non-CC clients (OpenAI, etc.) often send content as a plain string.
+func normalizeMessageContentToArray(body []byte) ([]byte, bool) {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return body, false
+	}
+
+	out := body
+	changed := false
+	idx := 0
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		content := msg.Get("content")
+		if content.Exists() && content.Type == gjson.String {
+			// content 是纯字符串，转为 [{type:"text",text:"..."}]
+			arr := []map[string]string{{"type": "text", "text": content.String()}}
+			path := fmt.Sprintf("messages.%d.content", idx)
+			if next, ok := setJSONValueBytes(out, path, arr); ok {
+				out = next
+				changed = true
+			}
+		}
+		idx++
+		return true
+	})
+	return out, changed
 }
 
 func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
@@ -1137,6 +1169,13 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 				}
 			}
 		}
+	}
+
+	// 真实 Claude Code 始终将 messages[].content 转为数组格式 [{type:"text",text:"..."}]
+	// 从不发送纯字符串的 content（cc/utils/messages.ts 会在发送前统一转换）
+	if next, changed := normalizeMessageContentToArray(out); changed {
+		out = next
+		modified = true
 	}
 
 	if !modified {
@@ -3803,7 +3842,7 @@ func rewriteSystemForNonClaudeCode(body []byte, system any, fpUserAgent string) 
 		{
 			"type":          "text",
 			"text":          claudeCodeSystemPrompt,
-			"cache_control": map[string]string{"type": "ephemeral", "scope": "global"},
+			"cache_control": map[string]string{"type": "ephemeral", "scope": "global", "ttl": "1h"},
 		},
 	}
 	out, ok := setJSONValueBytes(body, "system", claudeCodeSystemBlock)
@@ -5652,6 +5691,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// CCH 签名：将 cch=00000 占位符替换为 xxHash64 签名（需在所有 body 修改之后）
 	if enableCCH {
 		body = signBillingHeaderCCH(body)
+	} else {
+		// 未开启签名时，剥掉 cch 占位符/残留，避免发送 cch=00000（明显的伪造信号）
+		// 真实 Claude Code 在非 Bun 环境下不含 cch 字段
+		body = stripBillingHeaderCCH(body)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
@@ -8575,6 +8618,8 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 	if ctEnableCCH {
 		body = signBillingHeaderCCH(body)
+	} else {
+		body = stripBillingHeaderCCH(body)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
